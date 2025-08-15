@@ -156,7 +156,7 @@
           <label>Planilha (Excel/CSV)</label>
           <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" />
           <div class="row">
-            <div> <label>Coluna NOME</label> <select id="colNome"></select> </div>
+            <div> <label>Coluna NOME (p/ nome do arquivo)</label> <select id="colNome"></select> </div>
             <div> <label>Coluna CPF (Opcional)</label> <select id="colCPF"></select> </div>
           </div>
       </div>
@@ -207,6 +207,10 @@
     data: { type: 'text', x: 140, y: 580, w: 300, h: 30, font:'Poppins', size: 18, color:'#4b5563', align:'left', sample:'15 de Agosto de 2025' },
     carga: { type: 'text', x: 840, y: 580, w: 300, h: 30, font:'Poppins', size: 18, color:'#4b5563', align:'right', sample:'Carga Horária: 8 horas' },
   };
+  
+  function setStatus(msg) {
+    statusEl.textContent = msg;
+  }
 
   function initStageSize(w, h) {
     state.stageSize = { w: Number(w) || 1280, h: Number(h) || 720 };
@@ -325,7 +329,7 @@
 
   function mountDefaults() { fieldsContainer.innerHTML = ''; state.fields = {}; state.order = []; Object.entries(defaultFields).forEach(([k, cfg]) => createFieldEl(k, cfg)); deselectAll(); }
   
-  // === LÓGICA DE GERAÇÃO (CORRIGIDA E ROBUSTA) ===
+  // === LÓGICA DE GERAÇÃO ===
   async function preloadImages() {
       const imagePromises = [];
       const imageCache = {};
@@ -354,7 +358,9 @@
     ctx.textBaseline = 'middle';
     let tx = f.x;
     if (f.align === 'center') tx += f.w / 2;
-    if (f.align === 'right') tx += f.w - 2;
+    if (f.align === 'right') tx += f.w;
+    
+    // Simples quebra de linha por palavra
     const words = String(text).split(' ');
     let lines = [];
     let currentLine = words[0] || '';
@@ -368,8 +374,10 @@
         }
     }
     lines.push(currentLine);
+
     const lineHeight = (f.size || 24) * 1.2;
     let startY = (f.y + f.h / 2) - (lines.length - 1) * lineHeight / 2;
+    
     lines.forEach(line => {
         ctx.fillText(line, tx, startY);
         startY += lineHeight;
@@ -377,26 +385,44 @@
     ctx.restore();
   }
   
+  /**
+   * NOVA LÓGICA DE RENDERIZAÇÃO
+   * Esta função agora substitui dinamicamente o texto de um campo
+   * se o ID do campo corresponder a um nome de coluna no Excel.
+   */
   async function renderCanvas(imageCache, rowData = null) {
       const canvas = document.createElement('canvas');
       canvas.width = state.stageSize.w; canvas.height = state.stageSize.h;
       const ctx = canvas.getContext('2d');
+      
+      // Desenha o fundo
       if (imageCache['__background']) {
           ctx.drawImage(imageCache['__background'], 0, 0, canvas.width, canvas.height);
       } else {
           ctx.fillStyle = getComputedStyle(document.documentElement).getPropertyValue('--default-bg');
           ctx.fillRect(0, 0, canvas.width, canvas.height);
       }
-      for (const key of state.order) {
+      
+      // Desenha cada campo (imagem ou texto)
+      for (const key of state.order) { // 'key' é o ID do campo, ex: 'nome', 'curso'
           const f = state.fields[key];
+          
           if (f.type === 'image') {
               if (imageCache[key]) ctx.drawImage(imageCache[key], f.x, f.y, f.w, f.h);
-          } else { // text
-              let value = f.sample || '';
+          } else { // Se for um campo de texto
+              let value = f.sample || ''; // O valor padrão é o texto de exemplo
+              
+              // Se estivermos gerando em lote (rowData existe)...
               if (rowData) {
-                  if (key === 'nome') value = rowData[state.map.nome] || '';
-                  else if (key === 'cpf' && state.map.cpf) value = rowData[state.map.cpf] || '';
+                  // Verifique se a linha de dados do Excel (rowData) tem uma propriedade
+                  // com o mesmo nome que o ID do campo (key).
+                  if (rowData.hasOwnProperty(key)) {
+                      // Se houver correspondência, use o valor da planilha Excel.
+                      value = rowData[key];
+                  }
               }
+              
+              // Desenha o texto no canvas com o valor final (da planilha ou de exemplo)
               drawTextField(ctx, value, f);
           }
       }
@@ -404,22 +430,31 @@
   }
   
   // === Event Listeners ===
-  $('#bgInput').addEventListener('change', e => { 
-    const file = e.target.files[0]; if (!file) return; 
-    setStatus(`Carregando imagem...`);
-    const img = new Image(); 
-    img.onload = () => { 
-        state.bg = img; 
-        stage.style.backgroundImage = `url(${img.src})`; 
-        stage.style.backgroundColor = 'transparent';
-        initStageSize(img.naturalWidth, img.naturalHeight); 
-        setStatus(`Modelo: ${file.name}`); 
-    }; 
-    img.onerror = () => {
-        setStatus(`Erro: Arquivo de imagem inválido.`);
-        alert("Não foi possível carregar a imagem. Por favor, selecione um arquivo PNG ou JPG válido.");
-    };
-    img.src = URL.createObjectURL(file); 
+  $('#bgInput').addEventListener('change', e => {
+      const file = e.target.files[0];
+      if (!file) return;
+      setStatus(`Carregando imagem...`);
+      const reader = new FileReader();
+      reader.onload = (event) => {
+          const img = new Image();
+          img.onload = () => {
+              state.bg = img;
+              stage.style.backgroundImage = `url(${img.src})`;
+              stage.style.backgroundColor = 'transparent';
+              initStageSize(img.naturalWidth, img.naturalHeight);
+              setStatus(`Modelo: ${file.name}`);
+          };
+          img.onerror = () => {
+              setStatus(`Erro: Arquivo de imagem inválido.`);
+              alert("Não foi possível carregar a imagem. Por favor, selecione um arquivo PNG ou JPG válido.");
+          };
+          img.src = event.target.result;
+      };
+      reader.onerror = () => {
+        setStatus(`Erro ao ler o arquivo.`);
+        alert("Ocorreu um erro ao tentar ler o arquivo selecionado.");
+      };
+      reader.readAsDataURL(file);
   });
   
   $('#btnClearBg').addEventListener('click', () => {
@@ -455,26 +490,30 @@
   });
 
   btnGerar.addEventListener('click', async () => {
-    if (!state.data.length) return alert('Carregue uma planilha.');
+    if (!state.data.length || !state.map.nome) {
+      return alert('Carregue uma planilha e selecione a "Coluna NOME" para nomear os arquivos.');
+    }
     btnGerar.disabled = true; btnDownloadPreview.disabled = true;
     setStatus('Iniciando...');
     const zip = new JSZip(); const folder = zip.folder('certificados');
     try {
-        setStatus('Carregando imagens...');
+        setStatus('Carregando imagens e fontes...');
         const imageCache = await preloadImages();
         for (let i = 0; i < state.data.length; i++) {
+            const row = state.data[i];
             setStatus(`Gerando ${i + 1} de ${state.data.length}...`);
-            const canvas = await renderCanvas(imageCache, state.data[i]);
-            const safeName = (state.data[i][state.map.nome] || `cert_${i+1}`).replace(/[^a-z0-9\s-]/gi, '').trim();
+            const canvas = await renderCanvas(imageCache, row);
+            const participantName = row[state.map.nome] || `certificado_${i+1}`;
+            const safeName = participantName.replace(/[^a-z0-9\s-]/gi, '').trim();
             folder.file(`${safeName}.png`, canvas.toDataURL('image/png').split(',')[1], { base64: true });
         }
-        setStatus('Compactando...');
+        setStatus('Compactando arquivos...');
         const blob = await zip.generateAsync({type: 'blob'});
         saveAs(blob, 'certificados.zip');
-        setStatus(`${state.data.length} certificados gerados!`);
+        setStatus(`${state.data.length} certificados gerados com sucesso!`);
     } catch(e) {
-        setStatus('Erro ao gerar ZIP.');
-        console.error("ZIP Error:", e);
+        setStatus('Ocorreu um erro ao gerar o ZIP.');
+        console.error("ZIP Generation Error:", e);
     } finally {
         btnDownloadPreview.disabled = false;
         checkReady();
@@ -490,7 +529,7 @@
   $('#btnCenterV').addEventListener('click', () => { if (!state.selected) return; const f = state.fields[state.selected]; f.y = (state.stageSize.h / 2) - (f.h / 2); updateFieldElement(state.selected); loadProps(state.selected); });
   $('#btnDuplicar').addEventListener('click', () => { if(!state.selected) return; const f = state.fields[state.selected]; const key = `${state.selected}_copia`; const newCfg = {...f}; newCfg.x += 20; newCfg.y += 20; createFieldEl(key, newCfg); selectField(key); });
   $('#btnRemover').addEventListener('click', () => { if(!state.selected || !confirm(`Remover "${state.selected}"?`)) return; const el = [...fieldsContainer.querySelectorAll('.field')].find(e => e.dataset.key === state.selected); el.remove(); delete state.fields[state.selected]; state.order = state.order.filter(k => k !== state.selected); deselectAll(); });
-  fileInput.addEventListener('change', async e => { const file = e.target.files[0]; if (!file) return; const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' }); const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }); state.data = json; state.headers = Object.keys(json[0] || {}); fillSelect(colNome, state.headers, true); fillSelect(colCPF, state.headers, true); autoMap(); setStatus(`Lista com ${state.data.length} linhas.`); checkReady(); });
+  fileInput.addEventListener('change', async e => { const file = e.target.files[0]; if (!file) return; const wb = XLSX.read(await file.arrayBuffer(), { type: 'array' }); const json = XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]], { defval: '' }); state.data = json; state.headers = Object.keys(json[0] || {}); fillSelect(colNome, state.headers, true); fillSelect(colCPF, state.headers, true); autoMap(); setStatus(`Lista com ${state.data.length} linhas carregada.`); checkReady(); });
   function fillSelect(sel, arr, addEmpty = false) { sel.innerHTML = ''; if (addEmpty) sel.add(new Option('Selecione...', '')); arr.forEach(h => sel.add(new Option(h, h))); }
   function autoMap() { const find = (k) => state.headers.find(h => h.toLowerCase().includes(k)) || null; colNome.value = find('nome') || state.headers[0] || ''; colCPF.value = find('cpf') || ''; state.map.nome = colNome.value; state.map.cpf = colCPF.value; }
   colNome.addEventListener('change', () => { state.map.nome = colNome.value; checkReady(); });
